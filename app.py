@@ -6,7 +6,7 @@ from io import BytesIO
 import zipfile
 import os
 
-st.set_page_config(page_title="KML ↔ Excel Converter", layout="wide")
+st.set_page_config(page_title="KML ↔ Excel Converter Pro", layout="wide")
 
 # Fungsi-fungsi utilitas
 def save_to_excel(df):
@@ -22,6 +22,21 @@ def save_kml_to_bytes(kml):
     kml_bytes.write(kml.kml().encode('utf-8'))
     kml_bytes.seek(0)
     return kml_bytes
+
+def detect_coordinate_columns(df):
+    """Mendeteksi kolom yang mungkin berisi koordinat"""
+    possible_lat = ['latitude', 'lat', 'y', 'ycoord', 'northing', 'lat1', 'lat2']
+    possible_lon = ['longitude', 'lon', 'x', 'xcoord', 'easting', 'lon1', 'lon2']
+    
+    # Cari kolom yang cocok dengan pola
+    lat_cols = [col for col in df.columns if any(p in col.lower() for p in possible_lat)]
+    lon_cols = [col for col in df.columns if any(p in col.lower() for p in possible_lon)]
+    
+    # Default ke kolom pertama dan kedua jika tidak ditemukan
+    default_lat = lat_cols[0] if lat_cols else df.columns[0]
+    default_lon = lon_cols[0] if lon_cols else df.columns[1] if len(df.columns) > 1 else df.columns[0]
+    
+    return default_lat, default_lon
 
 # Tab KML ke Excel
 def kml_to_excel_tab():
@@ -60,10 +75,14 @@ def kml_to_excel_tab():
             with col1:
                 st.dataframe(df.head())
             with col2:
-                st.map(pd.DataFrame({
-                    'lat': df['Coordinates'].str.extract(r'([\d.-]+),')[0].astype(float),
-                    'lon': df['Coordinates'].str.extract(r',([\d.-]+)')[0].astype(float)
-                }).dropna())
+                try:
+                    coord_df = pd.DataFrame({
+                        'lat': df['Coordinates'].str.extract(r'([\d.-]+),')[0].astype(float),
+                        'lon': df['Coordinates'].str.extract(r',([\d.-]+)')[0].astype(float)
+                    }).dropna()
+                    st.map(coord_df)
+                except:
+                    st.warning("Tidak dapat menampilkan peta")
             
             excel_data = save_to_excel(df)
             st.download_button(
@@ -75,11 +94,11 @@ def kml_to_excel_tab():
         except Exception as e:
             st.error(f"Terjadi kesalahan: {str(e)}")
 
-# Tab Excel ke KML
-def excel_to_kml_tab():
-    st.header("Konversi Excel ke KML")
+# Tab Excel ke KML (Basic)
+def excel_to_kml_basic_tab():
+    st.header("Konversi Excel ke KML (Basic)")
     
-    uploaded_file = st.file_uploader("Pilih file Excel/CSV", type=['xlsx', 'xls', 'csv'], key="excel_uploader")
+    uploaded_file = st.file_uploader("Pilih file Excel/CSV", type=['xlsx', 'xls', 'csv'], key="excel_basic_uploader")
     
     if uploaded_file is not None:
         try:
@@ -88,34 +107,42 @@ def excel_to_kml_tab():
             else:
                 df = pd.read_excel(uploaded_file)
             
-            st.success("File Excel berhasil dibaca!")
+            st.success(f"File berhasil dibaca! {len(df)} baris ditemukan.")
             st.dataframe(df.head())
             
-            # Pilih kolom
+            # Deteksi kolom otomatis
+            default_lat, default_lon = detect_coordinate_columns(df)
             cols = df.columns.tolist()
             
             col1, col2, col3 = st.columns(3)
             with col1:
-                name_col = st.selectbox("Pilih kolom untuk Nama", cols, index=cols.index('name') if 'name' in cols else 0)
+                name_col = st.selectbox("Pilih kolom untuk Nama", cols, 
+                                      index=cols.index('name') if 'name' in cols else 
+                                      cols.index('ODP_NAME') if 'ODP_NAME' in cols else 0)
             with col2:
-                lon_col = st.selectbox("Pilih kolom untuk Longitude", cols, index=cols.index('longitude') if 'longitude' in cols else 
-                                      cols.index('lon') if 'lon' in cols else 0)
+                lon_col = st.selectbox("Pilih kolom untuk Longitude", cols, 
+                                      index=cols.index(default_lon) if default_lon in cols else 0)
             with col3:
-                lat_col = st.selectbox("Pilih kolom untuk Latitude", cols, index=cols.index('latitude') if 'latitude' in cols else 
-                                      cols.index('lat') if 'lat' in cols else 1 if len(cols) > 1 else 0)
+                lat_col = st.selectbox("Pilih kolom untuk Latitude", cols, 
+                                      index=cols.index(default_lat) if default_lat in cols else 1 if len(cols) > 1 else 0)
             
-            desc_cols = st.multiselect("Pilih kolom untuk Deskripsi (bisa pilih beberapa)", cols, 
-                                     default=[c for c in ['description', 'desc', 'info'] if c in cols])
+            # Validasi data
+            df[lat_col] = pd.to_numeric(df[lat_col], errors='coerce')
+            df[lon_col] = pd.to_numeric(df[lon_col], errors='coerce')
+            df = df.dropna(subset=[lat_col, lon_col])
+            
+            desc_cols = st.multiselect("Pilih kolom untuk Deskripsi", cols)
             
             # Buat KML
             kml = Kml()
+            points_added = 0
             
             for _, row in df.iterrows():
                 try:
                     lon = float(row[lon_col])
                     lat = float(row[lat_col])
                     
-                    description = "<![CDATA[<table>"
+                    description = "<![CDATA[<table border='1'>"
                     for col in desc_cols:
                         description += f"<tr><td><b>{col}</b></td><td>{row[col]}</td></tr>"
                     description += "</table>]]>"
@@ -125,36 +152,139 @@ def excel_to_kml_tab():
                         coords=[(lon, lat)],
                         description=description
                     )
-                except (ValueError, KeyError):
+                    points_added += 1
+                except (ValueError, TypeError):
                     continue
+            
+            st.success(f"Berhasil membuat {points_added} titik dalam KML")
+            
+            # Tampilkan peta
+            try:
+                st.map(df.rename(columns={lat_col: 'lat', lon_col: 'lon'})[['lat', 'lon']])
+            except:
+                st.warning("Tidak dapat menampilkan peta")
             
             # Download KML
             kml_bytes = save_kml_to_bytes(kml)
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button(
-                    label="Unduh sebagai KML",
-                    data=kml_bytes,
-                    file_name='converted_data.kml',
-                    mime='application/vnd.google-earth.kml+xml'
-                )
-            with col2:
-                st.map(df.rename(columns={lat_col: 'lat', lon_col: 'lon'})[[lat_col, lon_col]].dropna())
+            st.download_button(
+                label="Unduh sebagai KML",
+                data=kml_bytes,
+                file_name='converted_data.kml',
+                mime='application/vnd.google-earth.kml+xml'
+            )
             
             st.subheader("Preview KML")
             st.code(kml.kml(), language='xml')
+            
+        except Exception as e:
+            st.error(f"Terjadi kesalahan: {str(e)}")
+
+# Tab Excel ke KML (Group by STO)
+def excel_to_kml_sto_tab():
+    st.header("Konversi Excel ke KML (Group by STO)")
+    
+    uploaded_file = st.file_uploader("Pilih file Excel/CSV", type=['xlsx', 'xls', 'csv'], key="excel_sto_uploader")
+    
+    if uploaded_file is not None:
+        try:
+            if uploaded_file.name.endswith('.csv'):
+                df = pd.read_csv(uploaded_file)
+            else:
+                df = pd.read_excel(uploaded_file)
+            
+            st.success(f"File berhasil dibaca! {len(df)} baris ditemukan.")
+            
+            # Pilih kolom
+            cols = df.columns.tolist()
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                name_col = st.selectbox("Kolom Nama Lokasi", cols, 
+                                      index=cols.index('ODP_NAME') if 'ODP_NAME' in cols else 0)
+            with col2:
+                sto_col = st.selectbox("Kolom STO", cols, 
+                                     index=cols.index('STO') if 'STO' in cols else 
+                                     cols.index('STO_DESC') if 'STO_DESC' in cols else 0)
+            with col3:
+                lat_col = st.selectbox("Kolom Latitude", cols, 
+                                     index=cols.index('LATITUDE') if 'LATITUDE' in cols else 0)
+            with col4:
+                lon_col = st.selectbox("Kolom Longitude", cols, 
+                                     index=cols.index('LONGITUDE') if 'LONGITUDE' in cols else 1 if len(cols) > 1 else 0)
+            
+            desc_cols = st.multiselect("Kolom Deskripsi Tambahan", cols, 
+                                     default=['ODP_INDEX', 'CLUSNAME', 'USED', 'RSV', 'KATEGORI'])
+            
+            # Validasi data
+            df[lat_col] = pd.to_numeric(df[lat_col], errors='coerce')
+            df[lon_col] = pd.to_numeric(df[lon_col], errors='coerce')
+            df = df.dropna(subset=[lat_col, lon_col])
+            
+            if len(df) == 0:
+                st.error("Tidak ada data dengan koordinat valid!")
+                return
+            
+            # Buat KML dengan pengelompokan STO
+            kml = Kml()
+            sto_groups = df.groupby(sto_col)
+            
+            for sto_name, group in sto_groups:
+                fol = kml.newfolder(name=f"STO {sto_name}")
+                
+                for _, row in group.iterrows():
+                    try:
+                        lon = float(row[lon_col])
+                        lat = float(row[lat_col])
+                        
+                        description = "<![CDATA[<table border='1'>"
+                        for col in desc_cols:
+                            description += f"<tr><td><b>{col}</b></td><td>{row[col]}</td></tr>"
+                        description += "</table>]]>"
+                        
+                        fol.newpoint(
+                            name=str(row[name_col]),
+                            coords=[(lon, lat)],
+                            description=description
+                        )
+                    except (ValueError, TypeError):
+                        continue
+            
+            st.success(f"Berhasil membuat {len(df)} titik dalam {len(sto_groups)} STO")
+            
+            # Tampilkan peta
+            try:
+                st.map(df.rename(columns={lat_col: 'lat', lon_col: 'lon'})[['lat', 'lon']])
+            except:
+                st.warning("Tidak dapat menampilkan peta")
+            
+            # Download KML
+            kml_bytes = save_kml_to_bytes(kml)
+            st.download_button(
+                label="Unduh KML dengan Pengelompokan STO",
+                data=kml_bytes,
+                file_name='odp_by_sto.kml',
+                mime='application/vnd.google-earth.kml+xml'
+            )
+            
+            # Tampilkan statistik
+            st.subheader("Statistik per STO")
+            sto_stats = df[sto_col].value_counts().reset_index()
+            sto_stats.columns = ['STO', 'Jumlah ODP']
+            st.dataframe(sto_stats)
+            
         except Exception as e:
             st.error(f"Terjadi kesalahan: {str(e)}")
 
 # Antarmuka utama
-st.title("Konverter KML ↔ Excel")
+st.title("KML ↔ Excel Converter Pro")
 
-tab1, tab2 = st.tabs(["KML ke Excel", "Excel ke KML"])
+tab1, tab2, tab3 = st.tabs(["KML ke Excel", "Excel ke KML (Basic)", "Excel ke KML (Group by STO)"])
 with tab1:
     kml_to_excel_tab()
 with tab2:
-    excel_to_kml_tab()
+    excel_to_kml_basic_tab()
+with tab3:
+    excel_to_kml_sto_tab()
 
 st.markdown("""
 ### Petunjuk Penggunaan
@@ -164,10 +294,15 @@ st.markdown("""
 2. Aplikasi akan mengekstrak data dan menampilkan peta
 3. Unduh hasil dalam format Excel
 
-**Excel ke KML:**
+**Excel ke KML (Basic):**
 1. Unggah file Excel/CSV
 2. Pilih kolom untuk: Nama, Longitude, Latitude
 3. Pilih kolom tambahan untuk Deskripsi (opsional)
 4. Unduh hasil dalam format KML
-5. File KML bisa dibuka di Google Earth atau aplikasi GIS lainnya
+
+**Excel ke KML (Group by STO):**
+1. Unggah file Excel/CSV dengan data ODP
+2. Pilih kolom untuk: Nama, STO, Latitude, Longitude
+3. Pilih kolom tambahan untuk Deskripsi
+4. Unduh KML yang sudah dikelompokkan per STO
 """)
