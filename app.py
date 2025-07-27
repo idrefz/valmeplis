@@ -24,7 +24,7 @@ def save_kml_to_bytes(kml):
     return kml_bytes
 
 def detect_coordinate_columns(df):
-    """Mendeteksi kolom yang mungkin berisi koordinat"""
+    """Mendeteksi kolom yang mungkin berisi koordinat dengan lebih robust"""
     possible_lat = ['latitude', 'lat', 'y', 'ycoord', 'northing', 'lat1', 'lat2']
     possible_lon = ['longitude', 'lon', 'x', 'xcoord', 'easting', 'lon1', 'lon2']
     
@@ -37,6 +37,38 @@ def detect_coordinate_columns(df):
     default_lon = lon_cols[0] if lon_cols else df.columns[1] if len(df.columns) > 1 else df.columns[0]
     
     return default_lat, default_lon
+
+def extract_kml_data(doc):
+    """Ekstrak data dari KML dengan support untuk Point, Polygon, dan LineString"""
+    data = []
+    for pm in doc.Document.findall('.//{http://www.opengis.net/kml/2.2}Placemark'):
+        row = {
+            'Name': pm.name.text if hasattr(pm, 'name') and pm.name is not None else '',
+            'Description': pm.description.text if hasattr(pm, 'description') and pm.description is not None else '',
+            'Type': 'Unknown'
+        }
+        
+        if hasattr(pm, 'Point'):
+            row.update({
+                'Type': 'Point',
+                'Coordinates': pm.Point.coordinates.text if hasattr(pm.Point, 'coordinates') and pm.Point.coordinates is not None else ''
+            })
+        elif hasattr(pm, 'Polygon'):
+            row.update({
+                'Type': 'Polygon',
+                'Coordinates': pm.Polygon.outerBoundaryIs.LinearRing.coordinates.text 
+                              if hasattr(pm.Polygon, 'outerBoundaryIs') and 
+                                 hasattr(pm.Polygon.outerBoundaryIs, 'LinearRing') and
+                                 pm.Polygon.outerBoundaryIs.LinearRing.coordinates is not None else ''
+            })
+        elif hasattr(pm, 'LineString'):
+            row.update({
+                'Type': 'LineString',
+                'Coordinates': pm.LineString.coordinates.text if hasattr(pm.LineString, 'coordinates') and pm.LineString.coordinates is not None else ''
+            })
+        
+        data.append(row)
+    return data
 
 # Tab KML ke Excel
 def kml_to_excel_tab():
@@ -58,31 +90,32 @@ def kml_to_excel_tab():
             else:
                 doc = parser.parse(uploaded_file).getroot()
             
-            data = []
-            for pm in doc.Document.findall('.//{http://www.opengis.net/kml/2.2}Placemark'):
-                row = {
-                    'Name': pm.name.text if hasattr(pm, 'name') and pm.name is not None else '',
-                    'Description': pm.description.text if hasattr(pm, 'description') and pm.description is not None else '',
-                    'Coordinates': pm.Point.coordinates.text if hasattr(pm, 'Point') and pm.Point is not None else '',
-                    'Type': 'Point' if hasattr(pm, 'Point') else 'Polygon' if hasattr(pm, 'Polygon') else 'Unknown'
-                }
-                data.append(row)
-            
+            data = extract_kml_data(doc)
             df = pd.DataFrame(data)
-            st.success("File KML berhasil diproses!")
+            
+            if df.empty:
+                st.error("Tidak ada data yang ditemukan dalam file KML/KMZ")
+                return
+            
+            st.success(f"File KML berhasil diproses! {len(df)} fitur ditemukan.")
             
             col1, col2 = st.columns(2)
             with col1:
                 st.dataframe(df.head())
             with col2:
                 try:
-                    coord_df = pd.DataFrame({
-                        'lat': df['Coordinates'].str.extract(r'([\d.-]+),')[0].astype(float),
-                        'lon': df['Coordinates'].str.extract(r',([\d.-]+)')[0].astype(float)
-                    }).dropna()
-                    st.map(coord_df)
-                except:
-                    st.warning("Tidak dapat menampilkan peta")
+                    # Coba ekstrak koordinat untuk peta (hanya untuk Point)
+                    point_df = df[df['Type'] == 'Point']
+                    if not point_df.empty:
+                        coord_df = pd.DataFrame({
+                            'lat': point_df['Coordinates'].str.extract(r'([\d.-]+),')[0].astype(float),
+                            'lon': point_df['Coordinates'].str.extract(r',([\d.-]+)')[0].astype(float)
+                        }).dropna()
+                        st.map(coord_df)
+                    else:
+                        st.warning("Tidak ada titik koordinat yang dapat ditampilkan di peta")
+                except Exception as e:
+                    st.warning(f"Tidak dapat menampilkan peta: {str(e)}")
             
             excel_data = save_to_excel(df)
             st.download_button(
@@ -102,23 +135,31 @@ def excel_to_kml_basic_tab():
     
     if uploaded_file is not None:
         try:
+            # Baca file
             if uploaded_file.name.endswith('.csv'):
                 df = pd.read_csv(uploaded_file)
             else:
                 df = pd.read_excel(uploaded_file)
             
+            if df.empty:
+                st.error("File yang diunggah kosong")
+                return
+                
             st.success(f"File berhasil dibaca! {len(df)} baris ditemukan.")
-            st.dataframe(df.head())
+            
+            # Tampilkan preview
+            with st.expander("Preview Data"):
+                st.dataframe(df.head())
             
             # Deteksi kolom otomatis
             default_lat, default_lon = detect_coordinate_columns(df)
             cols = df.columns.tolist()
             
+            # UI untuk pemilihan kolom
             col1, col2, col3 = st.columns(3)
             with col1:
                 name_col = st.selectbox("Pilih kolom untuk Nama", cols, 
-                                      index=cols.index('name') if 'name' in cols else 
-                                      cols.index('ODP_NAME') if 'ODP_NAME' in cols else 0)
+                                      index=cols.index('name') if 'name' in cols else 0)
             with col2:
                 lon_col = st.selectbox("Pilih kolom untuk Longitude", cols, 
                                       index=cols.index(default_lon) if default_lon in cols else 0)
@@ -126,12 +167,23 @@ def excel_to_kml_basic_tab():
                 lat_col = st.selectbox("Pilih kolom untuk Latitude", cols, 
                                       index=cols.index(default_lat) if default_lat in cols else 1 if len(cols) > 1 else 0)
             
-            # Validasi data
+            # Validasi data koordinat
             df[lat_col] = pd.to_numeric(df[lat_col], errors='coerce')
             df[lon_col] = pd.to_numeric(df[lon_col], errors='coerce')
             df = df.dropna(subset=[lat_col, lon_col])
             
-            desc_cols = st.multiselect("Pilih kolom untuk Deskripsi", cols)
+            if df.empty:
+                st.error("Tidak ada data dengan koordinat valid!")
+                return
+                
+            # Pilihan kolom deskripsi
+            available_desc_cols = [col for col in cols if col not in [name_col, lat_col, lon_col]]
+            
+            desc_cols = st.multiselect(
+                "Pilih kolom untuk Deskripsi", 
+                available_desc_cols,
+                default=available_desc_cols[:3] if len(available_desc_cols) > 0 else []
+            )
             
             # Buat KML
             kml = Kml()
@@ -141,6 +193,10 @@ def excel_to_kml_basic_tab():
                 try:
                     lon = float(row[lon_col])
                     lat = float(row[lat_col])
+                    
+                    # Validasi range koordinat
+                    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+                        continue
                     
                     description = "<![CDATA[<table border='1'>"
                     for col in desc_cols:
@@ -153,16 +209,21 @@ def excel_to_kml_basic_tab():
                         description=description
                     )
                     points_added += 1
-                except (ValueError, TypeError):
+                except (ValueError, TypeError) as e:
                     continue
+            
+            if points_added == 0:
+                st.error("Tidak ada titik yang berhasil dibuat. Periksa format koordinat Anda.")
+                return
             
             st.success(f"Berhasil membuat {points_added} titik dalam KML")
             
             # Tampilkan peta
             try:
-                st.map(df.rename(columns={lat_col: 'lat', lon_col: 'lon'})[['lat', 'lon']])
-            except:
-                st.warning("Tidak dapat menampilkan peta")
+                map_df = df.rename(columns={lat_col: 'lat', lon_col: 'lon'})[['lat', 'lon']].copy()
+                st.map(map_df)
+            except Exception as e:
+                st.warning(f"Tidak dapat menampilkan peta: {str(e)}")
             
             # Download KML
             kml_bytes = save_kml_to_bytes(kml)
@@ -173,8 +234,9 @@ def excel_to_kml_basic_tab():
                 mime='application/vnd.google-earth.kml+xml'
             )
             
-            st.subheader("Preview KML")
-            st.code(kml.kml(), language='xml')
+            # Preview KML
+            with st.expander("Preview KML"):
+                st.code(kml.kml(), language='xml')
             
         except Exception as e:
             st.error(f"Terjadi kesalahan: {str(e)}")
@@ -187,12 +249,21 @@ def excel_to_kml_sto_tab():
     
     if uploaded_file is not None:
         try:
+            # Baca file
             if uploaded_file.name.endswith('.csv'):
                 df = pd.read_csv(uploaded_file)
             else:
                 df = pd.read_excel(uploaded_file)
             
+            if df.empty:
+                st.error("File yang diunggah kosong")
+                return
+                
             st.success(f"File berhasil dibaca! {len(df)} baris ditemukan.")
+            
+            # Tampilkan preview
+            with st.expander("Preview Data"):
+                st.dataframe(df.head())
             
             # Pilih kolom
             cols = df.columns.tolist()
@@ -212,21 +283,36 @@ def excel_to_kml_sto_tab():
                 lon_col = st.selectbox("Kolom Longitude", cols, 
                                      index=cols.index('LONGITUDE') if 'LONGITUDE' in cols else 1 if len(cols) > 1 else 0)
             
-            desc_cols = st.multiselect("Kolom Deskripsi Tambahan", cols, 
-                                     default=['ODP_INDEX', 'CLUSNAME', 'USED', 'RSV', 'KATEGORI'])
-            
-            # Validasi data
+            # Validasi data koordinat
             df[lat_col] = pd.to_numeric(df[lat_col], errors='coerce')
             df[lon_col] = pd.to_numeric(df[lon_col], errors='coerce')
             df = df.dropna(subset=[lat_col, lon_col])
             
-            if len(df) == 0:
+            if df.empty:
                 st.error("Tidak ada data dengan koordinat valid!")
                 return
+            
+            # Pilihan kolom deskripsi
+            available_desc_cols = [col for col in cols if col not in [name_col, sto_col, lat_col, lon_col]]
+            
+            # Cari kolom deskripsi default yang tersedia
+            default_desc_cols = []
+            for potential_col in ['ODP_INDEX', 'CLUSNAME', 'USED', 'RSV', 'KATEGORI']:
+                if potential_col in available_desc_cols:
+                    default_desc_cols.append(potential_col)
+                    if len(default_desc_cols) >= 3:  # Batasi jumlah default
+                        break
+            
+            desc_cols = st.multiselect(
+                "Kolom Deskripsi Tambahan", 
+                available_desc_cols,
+                default=default_desc_cols
+            )
             
             # Buat KML dengan pengelompokan STO
             kml = Kml()
             sto_groups = df.groupby(sto_col)
+            points_added = 0
             
             for sto_name, group in sto_groups:
                 fol = kml.newfolder(name=f"STO {sto_name}")
@@ -235,6 +321,10 @@ def excel_to_kml_sto_tab():
                     try:
                         lon = float(row[lon_col])
                         lat = float(row[lat_col])
+                        
+                        # Validasi range koordinat
+                        if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+                            continue
                         
                         description = "<![CDATA[<table border='1'>"
                         for col in desc_cols:
@@ -246,16 +336,22 @@ def excel_to_kml_sto_tab():
                             coords=[(lon, lat)],
                             description=description
                         )
+                        points_added += 1
                     except (ValueError, TypeError):
                         continue
             
-            st.success(f"Berhasil membuat {len(df)} titik dalam {len(sto_groups)} STO")
+            if points_added == 0:
+                st.error("Tidak ada titik yang berhasil dibuat. Periksa format koordinat Anda.")
+                return
+            
+            st.success(f"Berhasil membuat {points_added} titik dalam {len(sto_groups)} STO")
             
             # Tampilkan peta
             try:
-                st.map(df.rename(columns={lat_col: 'lat', lon_col: 'lon'})[['lat', 'lon']])
-            except:
-                st.warning("Tidak dapat menampilkan peta")
+                map_df = df.rename(columns={lat_col: 'lat', lon_col: 'lon'})[['lat', 'lon']].copy()
+                st.map(map_df)
+            except Exception as e:
+                st.warning(f"Tidak dapat menampilkan peta: {str(e)}")
             
             # Download KML
             kml_bytes = save_kml_to_bytes(kml)
@@ -286,23 +382,32 @@ with tab2:
 with tab3:
     excel_to_kml_sto_tab()
 
-st.markdown("""
-### Petunjuk Penggunaan
+# Informasi tambahan
+with st.expander("Petunjuk Penggunaan"):
+    st.markdown("""
+    ### **KML ke Excel:**
+    1. Unggah file KML/KMZ
+    2. Aplikasi akan mengekstrak data dan menampilkan peta
+    3. Unduh hasil dalam format Excel
 
-**KML ke Excel:**
-1. Unggah file KML/KMZ
-2. Aplikasi akan mengekstrak data dan menampilkan peta
-3. Unduh hasil dalam format Excel
+    ### **Excel ke KML (Basic):**
+    1. Unggah file Excel/CSV
+    2. Pilih kolom untuk: Nama, Longitude, Latitude
+    3. Pilih kolom tambahan untuk Deskripsi (opsional)
+    4. Unduh hasil dalam format KML
 
-**Excel ke KML (Basic):**
-1. Unggah file Excel/CSV
-2. Pilih kolom untuk: Nama, Longitude, Latitude
-3. Pilih kolom tambahan untuk Deskripsi (opsional)
-4. Unduh hasil dalam format KML
+    ### **Excel ke KML (Group by STO):**
+    1. Unggah file Excel/CSV dengan data ODP
+    2. Pilih kolom untuk: Nama, STO, Latitude, Longitude
+    3. Pilih kolom tambahan untuk Deskripsi
+    4. Unduh KML yang sudah dikelompokkan per STO
 
-**Excel ke KML (Group by STO):**
-1. Unggah file Excel/CSV dengan data ODP
-2. Pilih kolom untuk: Nama, STO, Latitude, Longitude
-3. Pilih kolom tambahan untuk Deskripsi
-4. Unduh KML yang sudah dikelompokkan per STO
-""")
+    ### Catatan:
+    - Pastikan data koordinat dalam format numerik yang valid
+    - Latitude harus antara -90 sampai 90
+    - Longitude harus antara -180 sampai 180
+    """)
+
+# Footer
+st.markdown("---")
+st.markdown("Aplikasi KML ↔ Excel Converter Pro © 2023")
