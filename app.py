@@ -268,27 +268,23 @@ def excel_to_kml_sto_tab():
             with st.expander("Preview Data"):
                 st.dataframe(df.head())
             
-            # Pilih kolom
+            # Deteksi otomatis kolom latitude/longitude
+            default_lat, default_lon = detect_coordinate_columns(df)
             cols = df.columns.tolist()
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.write("Kolom Nama Lokasi")
-                name_col = st.selectbox("Kolom Nama Lokasi", cols, 
-                                      index=cols.index('ODP_NAME') if 'ODP_NAME' in cols else 0)
+                name_col = st.selectbox("Kolom Nama Lokasi", cols, index=0)
             with col2:
                 st.write("Kolom STO")
-                sto_col = st.selectbox("Kolom STO", cols, 
-                                     index=cols.index('STO') if 'STO' in cols else 
-                                     cols.index('STO_DESC') if 'STO_DESC' in cols else 0)
+                sto_col = st.selectbox("Kolom STO", cols, index=0)
             with col3:
                 st.write("Kolom Latitude")
-                lat_col = st.selectbox("Kolom Latitude", cols, 
-                                     index=cols.index('LATITUDE') if 'LATITUDE' in cols else 0)
+                lat_col = st.selectbox("Kolom Latitude", cols, index=cols.index(default_lat) if default_lat in cols else 0)
             with col4:
                 st.write("Kolom Longitude")
-                lon_col = st.selectbox("Kolom Longitude", cols, 
-                                     index=cols.index('LONGITUDE') if 'LONGITUDE' in cols else 1 if len(cols) > 1 else 0)
+                lon_col = st.selectbox("Kolom Longitude", cols, index=cols.index(default_lon) if default_lon in cols else 1 if len(cols) > 1 else 0)
             
             # Validasi data koordinat
             df[lat_col] = pd.to_numeric(df[lat_col], errors='coerce')
