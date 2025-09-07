@@ -70,6 +70,14 @@ def extract_kml_data(doc):
         data.append(row)
     return data
 
+# Icon choices for placemarks
+ICON_CHOICES = {
+    "Yellow Square": "http://maps.google.com/mapfiles/kml/paddle/ylw-square.png",
+    "Light Blue Diamond": "http://maps.google.com/mapfiles/kml/paddle/ltblu-diamond.png",
+    "Home & Business": "http://maps.google.com/mapfiles/kml/shapes/homegardenbusiness.png",
+    "Red Stars": "http://maps.google.com/mapfiles/kml/paddle/red-stars.png"
+}
+
 # Tab KML ke Excel
 def kml_to_excel_tab():
     st.header("Konversi KML ke Excel")
@@ -188,6 +196,14 @@ def excel_to_kml_basic_tab():
                 default=available_desc_cols[:3] if len(available_desc_cols) > 0 else []
             )
             
+            # Pilihan icon pin
+            icon_label = st.selectbox(
+                "Pilih Icon Pin untuk KML",
+                list(ICON_CHOICES.keys()),
+                index=0
+            )
+            icon_url = ICON_CHOICES[icon_label]
+            
             # Buat KML
             kml = Kml()
             points_added = 0
@@ -206,11 +222,12 @@ def excel_to_kml_basic_tab():
                         description += f"<tr><td><b>{col}</b></td><td>{row[col]}</td></tr>"
                     description += "</table>]]>"
                     
-                    kml.newpoint(
+                    p = kml.newpoint(
                         name=str(row[name_col]),
                         coords=[(lon, lat)],
                         description=description
                     )
+                    p.style.iconstyle.icon.href = icon_url  # <-- Tambahkan baris ini
                     points_added += 1
                 except (ValueError, TypeError) as e:
                     continue
@@ -312,6 +329,14 @@ def excel_to_kml_sto_tab():
                 default=default_desc_cols
             )
             
+            # Pilihan icon pin
+            icon_label = st.selectbox(
+                "Pilih Icon Pin untuk KML",
+                list(ICON_CHOICES.keys()),
+                index=0
+            )
+            icon_url = ICON_CHOICES[icon_label]
+            
             # Buat KML dengan pengelompokan STO
             kml = Kml()
             sto_groups = df.groupby(sto_col)
@@ -319,7 +344,6 @@ def excel_to_kml_sto_tab():
             
             for sto_name, group in sto_groups:
                 fol = kml.newfolder(name=f"STO {sto_name}")
-                
                 for _, row in group.iterrows():
                     try:
                         lon = float(row[lon_col])
@@ -334,11 +358,12 @@ def excel_to_kml_sto_tab():
                             description += f"<tr><td><b>{col}</b></td><td>{row[col]}</td></tr>"
                         description += "</table>]]>"
                         
-                        fol.newpoint(
+                        p = fol.newpoint(
                             name=str(row[name_col]),
                             coords=[(lon, lat)],
                             description=description
                         )
+                        p.style.iconstyle.icon.href = icon_url  # <-- Tambahkan baris ini
                         points_added += 1
                     except (ValueError, TypeError):
                         continue
