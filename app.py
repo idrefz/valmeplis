@@ -158,12 +158,15 @@ def excel_to_kml_basic_tab():
             # UI untuk pemilihan kolom
             col1, col2, col3 = st.columns(3)
             with col1:
+                st.write("Pilih kolom untuk Nama")
                 name_col = st.selectbox("Pilih kolom untuk Nama", cols, 
                                       index=cols.index('name') if 'name' in cols else 0)
             with col2:
+                st.write("Pilih kolom untuk Longitude")
                 lon_col = st.selectbox("Pilih kolom untuk Longitude", cols, 
                                       index=cols.index(default_lon) if default_lon in cols else 0)
             with col3:
+                st.write("Pilih kolom untuk Latitude")
                 lat_col = st.selectbox("Pilih kolom untuk Latitude", cols, 
                                       index=cols.index(default_lat) if default_lat in cols else 1 if len(cols) > 1 else 0)
             
@@ -270,16 +273,20 @@ def excel_to_kml_sto_tab():
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
+                st.write("Kolom Nama Lokasi")
                 name_col = st.selectbox("Kolom Nama Lokasi", cols, 
                                       index=cols.index('ODP_NAME') if 'ODP_NAME' in cols else 0)
             with col2:
+                st.write("Kolom STO")
                 sto_col = st.selectbox("Kolom STO", cols, 
                                      index=cols.index('STO') if 'STO' in cols else 
                                      cols.index('STO_DESC') if 'STO_DESC' in cols else 0)
             with col3:
+                st.write("Kolom Latitude")
                 lat_col = st.selectbox("Kolom Latitude", cols, 
                                      index=cols.index('LATITUDE') if 'LATITUDE' in cols else 0)
             with col4:
+                st.write("Kolom Longitude")
                 lon_col = st.selectbox("Kolom Longitude", cols, 
                                      index=cols.index('LONGITUDE') if 'LONGITUDE' in cols else 1 if len(cols) > 1 else 0)
             
